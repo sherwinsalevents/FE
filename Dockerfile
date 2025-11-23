@@ -1,35 +1,34 @@
-# Use the official Node.js image to build the app
+# Stage 1: Build React app
 FROM node:18 AS builder
 
-# Set the working directory
-WORKDIR /ticketingsal
+WORKDIR /app
 
-# Copy package.json and package-lock.json
+# Copy package.json and lockfile
 COPY package*.json ./
 
 # Install dependencies
 RUN npm install
 
-# Copy the .env file if it exists
-COPY .env ./
-
-# Copy the rest of the application code
+# Copy source code
 COPY . .
 
-# Build the React app
+# Copy .env file (optional, used at build time)
+COPY .env ./
+
+# Build the React app for production
 RUN npm run build
 
-# Use Nginx to serve the app
+# Stage 2: Serve with Nginx
 FROM nginx:alpine
 
-# Copy the built files from the builder stage
-COPY --from=builder /ticketingsal/build /usr/share/nginx/html
+# Copy the build output to Nginx
+COPY --from=builder /app/build /usr/share/nginx/html
 
-# Copy the custom default.conf (if you have one)
+# Optional: Copy custom Nginx config
 # COPY default.conf /etc/nginx/conf.d/default.conf
 
 # Expose port 80
-EXPOSE 3000
+EXPOSE 80
 
 # Start Nginx
 CMD ["nginx", "-g", "daemon off;"]
