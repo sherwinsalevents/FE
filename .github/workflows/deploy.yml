@@ -21,6 +21,7 @@ env:
   DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
   DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
   APPLICATION_PORT: ${{ secrets.APPLICATION_PORT }}
+  APPLICATION_NAME:  ${{ secrets.APPLICATION_NAME }}
 
 jobs:
   checkout:
@@ -123,12 +124,12 @@ jobs:
             echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker pull $IMAGE_NAME:$IMAGE_TAG
 
             if echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker ps -a --format '{{.Names}}' | grep -q 'app'; then
-              echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker stop app
-              echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker rm app
+              echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker stop ${{ secrets.APPLICATION_NAME }}
+              echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker rm ${{ secrets.APPLICATION_NAME }}
             fi
 
             # Run the Node.js Docker container
-            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker run -d --name app -p 3000:80 $IMAGE_NAME:$IMAGE_TAG
+            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker run -d --name ${{ secrets.APPLICATION_NAME }} -p 3000:80 $IMAGE_NAME:$IMAGE_TAG
 
             # Install Nginx if not installed
             if ! command -v nginx >/dev/null 2>&1; then
