@@ -25,7 +25,7 @@ FROM nginx:alpine
 COPY --from=builder /app/build /usr/share/nginx/html
 
 # Optional: custom Nginx config (reverse proxy, caching, gzip)
-# COPY default.conf /etc/nginx/conf.d/default.conf
+COPY default.conf /etc/nginx/conf.d/default.conf
 
 # Expose port 80
 EXPOSE 80
