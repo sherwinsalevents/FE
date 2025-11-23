@@ -1,0 +1,164 @@
+name: Build and Deploy frontend Docker Image
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+ 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOCKER_IMAGE_PREFIX: ticketingsal/FE
+  SSH_HOST: ${{ secrets.SERVER_IP }}
+  SSH_USER: ${{ secrets.SSH_USER }}
+  SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+jobs:
+  checkout:
+    runs-on: ubuntu-latest
+    outputs:
+      branch_name: ${{ steps.vars.outputs.branch_name }}
+      image_tag: ${{ steps.vars.outputs.image_tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set Branch Variables
+        id: vars
+        run: |
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          SAFE_BRANCH_NAME=$(echo "$BRANCH_NAME" | sed 's#[^a-zA-Z0-9_.-]#-#g')
+          IMAGE_TAG=${{ github.run_number }}
+          echo "branch_name=$SAFE_BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  build:
+    runs-on: ubuntu-latest
+    needs: checkout
+    environment: prod
+    steps:
+      - uses: actions/checkout@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+      - name: Build Docker Image
+        run: |
+          IMAGE_NAME=${{ env.DOCKER_IMAGE_PREFIX }}-${{ needs.checkout.outputs.branch_name }}
+          IMAGE_TAG=${{ needs.checkout.outputs.image_tag }}
+          docker buildx build \
+            --cache-from=type=local,src=/tmp/.buildx-cache \
+            --cache-to=type=local,dest=/tmp/.buildx-cache-new \
+            -t $IMAGE_NAME:$IMAGE_TAG \
+            -f ./Dockerfile \
+            --load \
+            .
+      - name: Save image artifact
+        run: |
+          docker save -o image.tar ${{ env.DOCKER_IMAGE_PREFIX }}-${{ needs.checkout.outputs.branch_name }}:${{ needs.checkout.outputs.image_tag }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: image.tar
+
+  push:
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    needs: [checkout, build]
+    environment: prod
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+      - name: Load image
+        run: docker load -i image.tar
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Push Docker Image
+        run: |
+          IMAGE_NAME=${{ env.DOCKER_IMAGE_PREFIX }}-${{ needs.checkout.outputs.branch_name }}
+          IMAGE_TAG=${{ needs.checkout.outputs.image_tag }}
+          docker push $IMAGE_NAME:$IMAGE_TAG
+      - name: Add Image Info to Summary
+        run: |
+          echo "### 🚀 Docker Image Pushed" >> $GITHUB_STEP_SUMMARY
+          echo "- ${{ env.DOCKER_IMAGE_PREFIX }}-${{ needs.checkout.outputs.branch_name }}:${{ needs.checkout.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+
+
+  deploy:
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    needs: [checkout, push] 
+    environment: prod
+    steps:
+      - name: Deploy to Server via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            IMAGE_NAME="${{ env.DOCKER_IMAGE_PREFIX }}-${{ needs.checkout.outputs.branch_name }}"
+            IMAGE_TAG="${{ needs.checkout.outputs.image_tag }}"
+            FRONTEND_PORT=8080
+            sudo docker system prune -af --volumes || true
+            sudo docker pull $IMAGE_NAME:$IMAGE_TAG
+            if sudo docker ps -a --format '{{.Names}}' | grep -q 'frontend-app'; then
+              sudo docker stop frontend-app && sudo docker rm frontend-app
+            fi
+            sudo docker run -d --name frontend-app -p $FRONTEND_PORT:80 $IMAGE_NAME:$IMAGE_TAG
+            sudo systemctl restart nginx
+
+  cleanup:
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    needs: deploy 
+    steps:
+      - run: docker rmi ${{ env.DOCKER_IMAGE_PREFIX }}-${{ needs.checkout.outputs.branch_name }}:${{ needs.checkout.outputs.image_tag }} || true
+
+  dependabot:
+    runs-on: ubuntu-latest
+    needs: checkout
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v3
+      - name: Check and Merge Dependabot PRs
+        run: |
+          pr_count=$(gh pr list --state open --label "dependencies" --json number --jq '. | length')
+          if [ "$pr_count" -gt 0 ]; then
+            gh pr merge $(gh pr list --state open --label "dependencies" --json number --jq '.[0].number') --merge --admin
+          fi
+
+  snyk-scan:
+    runs-on: ubuntu-latest
+    needs: checkout
+    steps:
+      - uses: actions/checkout@v3
+      - run: npm install -g snyk
+      - run: snyk auth ${{ secrets.SNYK_AUTH }}
+      - run: snyk test --all-projects --json --debug > snyk-results.json || true
+        continue-on-error: true
+      - name: Generate Snyk Summary
+        run: |
+          echo "### 🛡️ Snyk Vulnerability Summary" >> $GITHUB_STEP_SUMMARY
+          SEVERITY_COUNTS=$(jq '.vulnerabilities // [] | group_by(.severity) | map({(.[0].severity): length}) | add' snyk-results.json)
+          echo "#### 📊 Severity Breakdown" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+          echo "$SEVERITY_COUNTS" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        continue-on-error: true
