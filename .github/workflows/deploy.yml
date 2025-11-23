@@ -128,7 +128,7 @@ jobs:
             fi
 
             # Run the Node.js Docker container
-            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker run -d --name app -p $APPLICATION_PORT:$APPLICATION_PORT $IMAGE_NAME:$IMAGE_TAG
+            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker run -d --name app -p 3000:80 $IMAGE_NAME:$IMAGE_TAG
 
             # Install Nginx if not installed
             if ! command -v nginx >/dev/null 2>&1; then
