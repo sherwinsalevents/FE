@@ -123,30 +123,56 @@ jobs:
             echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker system prune -af --volumes || true
             echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker pull $IMAGE_NAME:$IMAGE_TAG
 
+            # Stop old container
             if echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker ps -a --format '{{.Names}}' | grep -q '${{ secrets.APPLICATION_NAME }}'; then
               echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker stop ${{ secrets.APPLICATION_NAME }}
               echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker rm ${{ secrets.APPLICATION_NAME }}
             fi
 
-            # Run the Node.js Docker container
-            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker run -d --name ${{ secrets.APPLICATION_NAME }} -p 3000:80 $IMAGE_NAME:$IMAGE_TAG
+            # Run frontend container (React + Nginx)
+            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker run -d \
+              --name ${{ secrets.APPLICATION_NAME }} \
+              -p 3000:80 \
+              $IMAGE_NAME:$IMAGE_TAG
 
-            # Install Nginx if not installed
+            ###############################################
+            # INSTALL NGINX + CERTBOT IF NOT INSTALLED
+            ###############################################
             if ! command -v nginx >/dev/null 2>&1; then
               echo "${{ secrets.SSH_PASSWORD }}" | sudo -S apt update
               echo "${{ secrets.SSH_PASSWORD }}" | sudo -S apt install -y nginx
             fi
 
-            # Create Nginx config for portal.salevents.net
+            if ! command -v certbot >/dev/null 2>&1; then
+              echo "${{ secrets.SSH_PASSWORD }}" | sudo -S apt install -y certbot python3-certbot-nginx
+            fi
+
+            ###############################################
+            # FORCE CERTBOT ISSUE/RENEW EVERY DEPLOY
+            ###############################################
+            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S certbot --nginx -d portal.salevents.net --non-interactive --agree-tos -m ${{ secrets.SSL_EMAIL }} --redirect || true
+
+            ###############################################
+            # REBUILD NGINX CONFIG (HTTP + HTTPS)
+            ###############################################
             NGINX_CONF="/etc/nginx/conf.d/portal.salevents.net.conf"
             echo "${{ secrets.SSH_PASSWORD }}" | sudo -S tee $NGINX_CONF > /dev/null <<'EOF'
+            # Redirect all HTTP to HTTPS
             server {
                 listen 80;
                 listen [::]:80;
                 server_name portal.salevents.net;
+                return 301 https://$host$request_uri;
+            }
 
-                access_log /var/log/nginx/access.log;
-                error_log /var/log/nginx/error.log warn;
+            # HTTPS server
+            server {
+                listen 443 ssl;
+                listen [::]:443 ssl;
+                server_name portal.salevents.net;
+
+                ssl_certificate /etc/letsencrypt/live/portal.salevents.net/fullchain.pem;
+                ssl_certificate_key /etc/letsencrypt/live/portal.salevents.net/privkey.pem;
 
                 location / {
                     proxy_pass http://127.0.0.1:3000;
@@ -160,25 +186,20 @@ jobs:
                 location ~ /\.(?!well-known).* {
                     deny all;
                 }
-
-                error_page 404 /404.html;
-                location = /404.html {
-                    root /usr/share/nginx/html;
-                    internal;
-                }
-
-                error_page 500 502 503 504 /50x.html;
-                location = /50x.html {
-                    root /usr/share/nginx/html;
-                    internal;
-                }
             }
             EOF
 
-            # Test Nginx config and reload
+            ###############################################
+            # TEST + RELOAD NGINX
+            ###############################################
             echo "${{ secrets.SSH_PASSWORD }}" | sudo -S nginx -t
             echo "${{ secrets.SSH_PASSWORD }}" | sudo -S systemctl restart nginx
 
+            ###############################################
+            # SET AUTO RENEW (TWICE A DAY)
+            ###############################################
+            CRON_JOB="0 */12 * * * certbot renew --post-hook \"systemctl reload nginx\""
+            (echo "${{ secrets.SSH_PASSWORD }}" | sudo -S crontab -l 2>/dev/null | grep -v 'certbot renew'; echo "$CRON_JOB") | echo "${{ secrets.SSH_PASSWORD }}" | sudo -S crontab -
 
   cleanup:
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop'
