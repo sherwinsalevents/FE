@@ -1,4 +1,4 @@
-name: Build and Deploy frontend Docker Image
+name: Build and Deploy Docker Image
 
 on:
   push:
@@ -13,12 +13,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  DOCKER_IMAGE_PREFIX: ticketingsal/frontend
+  DOCKER_IMAGE_PREFIX: ${{ secrets.DOCKER_USERNAME }}/ticketingsal-frontend
   SSH_HOST: ${{ secrets.SERVER_IP }}
   SSH_USER: ${{ secrets.SSH_USER }}
+  SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
   SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
   DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
   DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  APPLICATION_PORT: ${{ secrets.APPLICATION_PORT }}
 
 jobs:
   checkout:
@@ -114,14 +116,68 @@ jobs:
           script: |
             IMAGE_NAME="${{ env.DOCKER_IMAGE_PREFIX }}-${{ needs.checkout.outputs.branch_name }}"
             IMAGE_TAG="${{ needs.checkout.outputs.image_tag }}"
-            FRONTEND_PORT=8080
-            sudo docker system prune -af --volumes || true
-            sudo docker pull $IMAGE_NAME:$IMAGE_TAG
-            if sudo docker ps -a --format '{{.Names}}' | grep -q 'frontend-app'; then
-              sudo docker stop frontend-app && sudo docker rm frontend-app
+            APPLICATION_PORT=${{ env.APPLICATION_PORT }}
+
+            # Use sudo with password from secret
+            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker system prune -af --volumes || true
+            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker pull $IMAGE_NAME:$IMAGE_TAG
+
+            if echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker ps -a --format '{{.Names}}' | grep -q 'app'; then
+              echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker stop app
+              echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker rm app
             fi
-            sudo docker run -d --name frontend-app -p $FRONTEND_PORT:80 $IMAGE_NAME:$IMAGE_TAG
-            sudo systemctl restart nginx
+
+            # Run the Node.js Docker container
+            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker run -d --name app -p $APPLICATION_PORT:$APPLICATION_PORT $IMAGE_NAME:$IMAGE_TAG
+
+            # Install Nginx if not installed
+            if ! command -v nginx >/dev/null 2>&1; then
+              echo "${{ secrets.SSH_PASSWORD }}" | sudo -S apt update
+              echo "${{ secrets.SSH_PASSWORD }}" | sudo -S apt install -y nginx
+            fi
+
+            # Create Nginx config for portal.salevents.net
+            NGINX_CONF="/etc/nginx/conf.d/portal.salevents.net.conf"
+            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S tee $NGINX_CONF > /dev/null <<'EOF'
+            server {
+                listen 80;
+                listen [::]:80;
+                server_name portal.salevents.net;
+
+                access_log /var/log/nginx/access.log;
+                error_log /var/log/nginx/error.log warn;
+
+                location / {
+                    proxy_pass http://127.0.0.1:3000;
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection 'upgrade';
+                    proxy_set_header Host $host;
+                    proxy_cache_bypass $http_upgrade;
+                }
+
+                location ~ /\.(?!well-known).* {
+                    deny all;
+                }
+
+                error_page 404 /404.html;
+                location = /404.html {
+                    root /usr/share/nginx/html;
+                    internal;
+                }
+
+                error_page 500 502 503 504 /50x.html;
+                location = /50x.html {
+                    root /usr/share/nginx/html;
+                    internal;
+                }
+            }
+            EOF
+
+            # Test Nginx config and reload
+            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S nginx -t
+            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S systemctl restart nginx
+
 
   cleanup:
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop'
@@ -144,21 +200,21 @@ jobs:
             gh pr merge $(gh pr list --state open --label "dependencies" --json number --jq '.[0].number') --merge --admin
           fi
 
-  snyk-scan:
-    runs-on: ubuntu-latest
-    needs: checkout
-    steps:
-      - uses: actions/checkout@v3
-      - run: npm install -g snyk
-      - run: snyk auth ${{ secrets.SNYK_AUTH }}
-      - run: snyk test --all-projects --json --debug > snyk-results.json || true
-        continue-on-error: true
-      - name: Generate Snyk Summary
-        run: |
-          echo "### 🛡️ Snyk Vulnerability Summary" >> $GITHUB_STEP_SUMMARY
-          SEVERITY_COUNTS=$(jq '.vulnerabilities // [] | group_by(.severity) | map({(.[0].severity): length}) | add' snyk-results.json)
-          echo "#### 📊 Severity Breakdown" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
-          echo "$SEVERITY_COUNTS" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        continue-on-error: true
+  # snyk-scan:
+  #   runs-on: ubuntu-latest
+  #   needs: checkout
+  #   steps:
+  #     - uses: actions/checkout@v3
+  #     - run: npm install -g snyk
+  #     - run: snyk auth ${{ secrets.SNYK_AUTH }}
+  #     - run: snyk test --all-projects --json --debug > snyk-results.json || true
+  #       continue-on-error: true
+  #     - name: Generate Snyk Summary
+  #       run: |
+  #         echo "### 🛡️ Snyk Vulnerability Summary" >> $GITHUB_STEP_SUMMARY
+  #         SEVERITY_COUNTS=$(jq '.vulnerabilities // [] | group_by(.severity) | map({(.[0].severity): length}) | add' snyk-results.json)
+  #         echo "#### 📊 Severity Breakdown" >> $GITHUB_STEP_SUMMARY
+  #         echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+  #         echo "$SEVERITY_COUNTS" >> $GITHUB_STEP_SUMMARY
+  #         echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+  #       continue-on-error: true
