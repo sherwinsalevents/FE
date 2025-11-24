@@ -235,8 +235,13 @@ jobs:
             ###############################################
             CRON_JOB="0 */12 * * * certbot renew --post-hook \"systemctl reload nginx\""
 
-            # Overwrite entire crontab safely
+            # Remove any existing crontab (including corrupted "-") and install new cron safely
             echo "$CRON_JOB" | echo "${{ secrets.SSH_PASSWORD }}" | sudo -S crontab -
+
+            # Optional: verify cron installed
+            echo "Installed cron jobs:"
+            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S crontab -l
+
             echo "Deployment completed successfully."
   cleanup:
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop'
