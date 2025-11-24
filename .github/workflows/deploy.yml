@@ -234,10 +234,13 @@ jobs:
             # 5. SET AUTO-RENEW (TWICE A DAY)
             ###############################################
             CRON_JOB="0 */12 * * * certbot renew --post-hook \"systemctl reload nginx\""
-            (
-              echo "${{ secrets.SSH_PASSWORD }}" | sudo -S crontab -l 2>/dev/null | grep -v 'certbot renew'
-              echo "$CRON_JOB"
-            ) | echo "${{ secrets.SSH_PASSWORD }}" | sudo -S crontab -
+
+            # Safely load existing cron (ignore errors)
+            OLD_CRON=$(echo "${{ secrets.SSH_PASSWORD }}" | sudo -S crontab -l 2>/dev/null | grep -v 'certbot renew' || true)
+
+            # Write combined cron
+            echo "$OLD_CRON
+            $CRON_JOB" | echo "${{ secrets.SSH_PASSWORD }}" | sudo -S crontab -
 
   cleanup:
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop'
