@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  DOCKER_IMAGE_PREFIX: ${{ secrets.DOCKER_USERNAME }}/ticketingsal-frontend
+  DOCKER_IMAGE_PREFIX: ${{ secrets.DOCKER_USERNAME }}/${{ secrets.APPLICATION_NAME }}
   SSH_HOST: ${{ secrets.SERVER_IP }}
   SSH_USER: ${{ secrets.SSH_USER }}
   SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
@@ -134,7 +134,7 @@ jobs:
             # Run frontend container (React + Nginx inside Docker)
             echo "${{ secrets.SSH_PASSWORD }}" | sudo -S docker run -d \
               --name ${{ secrets.APPLICATION_NAME }} \
-              -p 3000:80 \
+              -p ${{ env.APPLICATION_PORT }}:${{ env.APPLICATION_PORT }} \
               $IMAGE_NAME:$IMAGE_TAG
 
 
@@ -155,15 +155,15 @@ jobs:
             # 1. CREATE TEMPORARY HTTP CONFIG (NO SSL)
             #    TO ENSURE CERTBOT CAN VALIDATE DOMAIN
             ###############################################
-            NGINX_CONF="/etc/nginx/conf.d/portal.salevents.net.conf"
+            NGINX_CONF="/etc/nginx/conf.d/${{ secrets.APPLICATION_DOMAIN }}.conf"
 
             echo "${{ secrets.SSH_PASSWORD }}" | sudo -S tee $NGINX_CONF > /dev/null <<'EOF'
             server {
                 listen 80;
-                server_name portal.salevents.net;
+                server_name ${{ secrets.APPLICATION_DOMAIN }};
 
                 location / {
-                    proxy_pass http://127.0.0.1:3000;
+                    proxy_pass http://127.0.0.1:${{ secrets.APPLICATION_PORT }};
                     proxy_set_header Host $host;
                 }
 
@@ -183,7 +183,7 @@ jobs:
             ###############################################
             echo "${{ secrets.SSH_PASSWORD }}" | sudo -S certbot certonly \
               --webroot -w /var/www/html \
-              -d portal.salevents.net \
+              -d ${{ secrets.APPLICATION_DOMAIN }} \
               --non-interactive --agree-tos -m ${{ secrets.SSL_EMAIL }} || true
 
 
@@ -194,20 +194,20 @@ jobs:
             # Redirect HTTP → HTTPS
             server {
                 listen 80;
-                server_name portal.salevents.net;
+                server_name ${{ secrets.APPLICATION_DOMAIN }};
                 return 301 https://$host$request_uri;
             }
 
             # HTTPS Server
             server {
                 listen 443 ssl;
-                server_name portal.salevents.net;
+                server_name ${{ secrets.APPLICATION_DOMAIN }};
 
-                ssl_certificate /etc/letsencrypt/live/portal.salevents.net/fullchain.pem;
-                ssl_certificate_key /etc/letsencrypt/live/portal.salevents.net/privkey.pem;
+                ssl_certificate /etc/letsencrypt/live/${{ secrets.APPLICATION_DOMAIN }}/fullchain.pem;
+                ssl_certificate_key /etc/letsencrypt/live/${{ secrets.APPLICATION_DOMAIN }}/privkey.pem;
 
                 location / {
-                    proxy_pass http://127.0.0.1:3000;
+                    proxy_pass http://127.0.0.1:${{ secrets.APPLICATION_PORT }};
                     proxy_http_version 1.1;
                     proxy_set_header Upgrade $http_upgrade;
                     proxy_set_header Connection "upgrade";
